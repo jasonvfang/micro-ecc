@@ -8,6 +8,7 @@
 #define num_bytes_secp224r1 28
 #define num_bytes_secp256r1 32
 #define num_bytes_secp256k1 32
+#define num_bytes_brp256r1  32
 
 #if (uECC_WORD_SIZE == 1)
 
@@ -16,6 +17,7 @@
 #define num_words_secp224r1 28
 #define num_words_secp256r1 32
 #define num_words_secp256k1 32
+#define num_words_brp256r1  32
 
 #define BYTES_TO_WORDS_8(a, b, c, d, e, f, g, h) \
     0x##a, 0x##b, 0x##c, 0x##d, 0x##e, 0x##f, 0x##g, 0x##h
@@ -28,6 +30,7 @@
 #define num_words_secp224r1 7
 #define num_words_secp256r1 8
 #define num_words_secp256k1 8
+#define num_words_brp256r1  8
 
 #define BYTES_TO_WORDS_8(a, b, c, d, e, f, g, h) 0x##d##c##b##a, 0x##h##g##f##e
 #define BYTES_TO_WORDS_4(a, b, c, d) 0x##d##c##b##a
@@ -39,6 +42,7 @@
 #define num_words_secp224r1 4
 #define num_words_secp256r1 4
 #define num_words_secp256k1 4
+#define num_words_brp256r1  4
 
 #define BYTES_TO_WORDS_8(a, b, c, d, e, f, g, h) 0x##h##g##f##e##d##c##b##a##ull
 #define BYTES_TO_WORDS_4(a, b, c, d) 0x##d##c##b##a##ull
@@ -1244,5 +1248,101 @@ static void omega_mult_secp256k1(uint64_t * result, const uint64_t * right) {
 #endif /* (uECC_OPTIMIZATION_LEVEL > 0 &&  && !asm_mmod_fast_secp256k1) */
 
 #endif /* uECC_SUPPORTS_secp256k1 */
+#if uECC_SUPPORTS_brp256r1
+uECC_word_t brainpool_a[uECC_MAX_WORDS] = { 
+        BYTES_TO_WORDS_8(D9, B5, 30, F3, 44, 4B, 4A, E9),
+        BYTES_TO_WORDS_8(6C, 5C, DC, 26, C1, 55, 80, FB),
+        BYTES_TO_WORDS_8(E7, FF, 7A, 41, 30, 75, F6, EE),
+        BYTES_TO_WORDS_8(57, 30, 2C, FC, 75, 09, 5A, 7D) };
 
+static void x_side_brain(uECC_word_t *result, const uECC_word_t *x, uECC_Curve curve) {
+    wordcount_t num_words = curve->num_words;
+
+    uECC_vli_modSquare_fast(result, x, curve);                             /* r = x^2 */
+    uECC_vli_modSub(result, result, brainpool_a, curve->p, num_words);       /* r = x^2 - 3 */
+    uECC_vli_modMult_fast(result, result, x, curve);                       /* r = x^3 - 3x */
+    uECC_vli_modAdd(result, result, curve->b, curve->p, num_words); /* r = x^3 - 3x + b */
+}
+
+/* Double in place */
+static void double_jacobian_brp256r1(uECC_word_t * X1,
+                                      uECC_word_t * Y1,
+                                      uECC_word_t * Z1,
+                                      uECC_Curve curve) {
+    /* t1 = X, t2 = Y, t3 = Z */
+    uECC_word_t t4[num_words_brainpoolP256r1];
+    uECC_word_t t5[num_words_brainpoolP256r1];
+    uECC_word_t t6[num_words_brainpoolP256r1];
+
+    if (uECC_vli_isZero(Z1, num_words_brainpoolP256r1)) {
+        return;
+    }
+
+    uECC_vli_modSquare_fast(t4, X1, curve);   /* t4 = x1^2 */
+    uECC_vli_modSquare_fast(t5, Y1, curve); /* t5 = y1^2 */
+    uECC_vli_modMult_fast(X1, X1, t5, curve); /* t1 =  x1*y1^2 = A */
+    uECC_vli_modSquare_fast(t5, t5, curve); /* t5 = y1^4 */
+    uECC_vli_modSquare_fast(t6, Z1, curve); /* t6 = z1^2 */
+    uECC_vli_modSquare_fast(t6, t6, curve); /* t6 = z1^4 */
+    uECC_vli_modMult_fast(Z1, Y1, Z1, curve); /* t3 =  y1*z1 = z3 */
+    uECC_vli_modAdd(Y1, t4, t4, curve->p, num_words_brainpoolP256r1); /* t2 = 2*x1^2 */
+    uECC_vli_modAdd(t4, t4, Y1, curve->p, num_words_brainpoolP256r1); /* t2 = 3*x1^2 */
+    uECC_vli_modMult_fast(t6, brainpool_a, t6, curve); /* t6 =  a*z1^4 */
+    uECC_vli_modAdd(t4, t4, t6, curve->p, num_words_brainpoolP256r1); /* t4 = 3*x1^2 + a*z1^4 */
+
+    if (uECC_vli_testBit(t4, 0)) {
+        uECC_word_t carry = uECC_vli_add(t4, t4, curve->p, num_words_brainpoolP256r1);
+        uECC_vli_rshift1(t4, num_words_brainpoolP256r1);
+        t4[num_words_brainpoolP256r1 - 1] |= carry << (uECC_WORD_BITS - 1);
+    } else {
+        uECC_vli_rshift1(t4, num_words_brainpoolP256r1);
+    }
+    /* t4 = 1/2*(3*x1^2 + a*z1^4) = B */
+
+    uECC_vli_modSquare_fast(t6, t4, curve);                     /* t6 = B^2 */
+    uECC_vli_modAdd(Y1, X1, X1, curve->p, num_words_brainpoolP256r1); /* t2 = 2A */ 
+    uECC_vli_modSub(t6, t6, Y1, curve->p, num_words_brainpoolP256r1); /* t1 = B^2 - 2A = x3 */    
+    uECC_vli_modSub(X1, X1, t6, curve->p, num_words_brainpoolP256r1); /* t4 = A - x3 */ 
+    uECC_vli_modMult_fast(t4, t4, X1, curve);                   /* t4 = B * (A - x3) */
+    uECC_vli_modSub(X1, t4, t5, curve->p, num_words_brainpoolP256r1); /* t2 = B * (A - x3) - y1^4 = y3 */
+
+    uECC_vli_set(Y1, X1, num_words);
+    uECC_vli_set(X1, t6, num_words);
+}
+
+static const struct uECC_Curve_t curve_brainpoolP256r1 = {
+    num_words_brp256r1,
+    num_bytes_brp256r1,
+    256, /* num_n_bits */
+    { BYTES_TO_WORDS_8(77, 53, 6E, 1F, 1D, 48, 13, 20),
+        BYTES_TO_WORDS_8(28, 20, 26, D5, 23, F6, 3B, 6E),
+        BYTES_TO_WORDS_8(72, 8D, 83, 9D, 90, 0A, 66, 3E),
+        BYTES_TO_WORDS_8(BC, A9, EE, A1, DB, 57, FB, A9) },
+    { BYTES_TO_WORDS_8(A7, 56, 48, 97, 82, 0E, 1E, 90),
+        BYTES_TO_WORDS_8(F7, A6, 61, B5, A3, 7A, 39, 8C),
+        BYTES_TO_WORDS_8(71, 8D, 83, 9D, 90, 0A, 66, 3E),
+        BYTES_TO_WORDS_8(BC, A9, EE, A1, DB, 57, FB, A9) },
+    { BYTES_TO_WORDS_8(62, 32, CE, 9A, BD, 53, 44, 3A),
+        BYTES_TO_WORDS_8(C2, 23, BD, E3, E1, 27, DE, B9),
+        BYTES_TO_WORDS_8(AF, B7, 81, FC, 2F, 48, 4B, 2C),
+        BYTES_TO_WORDS_8(CB, 57, 7E, CB, B9, AE, D2, 8B),
+
+        BYTES_TO_WORDS_8(97, 69, 04, 2F, C7, 54, 1D, 5C),
+        BYTES_TO_WORDS_8(54, 8E, ED, 2D, 13, 45, 77, C2),
+        BYTES_TO_WORDS_8(C9, 1D, 61, 14, 1A, 46, F8, 97),
+        BYTES_TO_WORDS_8(FD, C4, DA, C3, 35, F8, 7E, 54) },
+    { BYTES_TO_WORDS_8(B6, 07, 8C, FF, 18, DC, CC, 6B),
+        BYTES_TO_WORDS_8(CE, E1, F7, 5C, 29, 16, 84, 95),
+        BYTES_TO_WORDS_8(BF, 7C, D7, BB, D9, B5, 30, F3),
+        BYTES_TO_WORDS_8(44, 4B, 4A, E9, 6C, 5C, DC, 26) },
+    &double_jacobian_brp256r1,
+#if uECC_SUPPORT_COMPRESSED_POINT
+    &mod_sqrt_default,
+#endif
+    &x_side_brain,
+#if (uECC_OPTIMIZATION_LEVEL > 0)
+    NULL
+#endif
+};
+#endif
 #endif /* _UECC_CURVE_SPECIFIC_H_ */
