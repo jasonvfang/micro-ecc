@@ -626,6 +626,10 @@ uECC_VLI_API void uECC_vli_modMult_fast(uECC_word_t *result,
     uECC_word_t product[2 * uECC_MAX_WORDS];
     uECC_vli_mult(product, left, right, curve->num_words);
 #if (uECC_OPTIMIZATION_LEVEL > 0)
+    if (!curve->mmod_fast){
+        uECC_vli_mmod(result, product, curve->p, curve->num_words);
+        return;
+    }
     curve->mmod_fast(result, product);
 #else
     uECC_vli_mmod(result, product, curve->p, curve->num_words);
@@ -652,6 +656,10 @@ uECC_VLI_API void uECC_vli_modSquare_fast(uECC_word_t *result,
     uECC_word_t product[2 * uECC_MAX_WORDS];
     uECC_vli_square(product, left, curve->num_words);
 #if (uECC_OPTIMIZATION_LEVEL > 0)
+    if (!curve->mmod_fast){
+        uECC_vli_mmod(result, product, curve->p, curve->num_words);
+        return;
+    }
     curve->mmod_fast(result, product);
 #else
     uECC_vli_mmod(result, product, curve->p, curve->num_words);
